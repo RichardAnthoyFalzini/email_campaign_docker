@@ -133,4 +133,6 @@ Puoi cancellare `state.json` solo se vuoi ripartire completamente da zero (ricor
 - **Limiti Gmail**: anche se imposti `daily_send_limit`, resta soggetto alle quote Google (per account consumer max ~500/die, per Workspace 2.000).
 - **Test locali**: se vuoi lanciare `pytest` fuori dal container, imposta `PYTHONPATH` sulla root del progetto e replica la struttura `data/`/`creds/`.
 
+BONUS: il workflow GitHub Actions `.github/workflows/tests.yml` lancia automaticamente `pytest` su ogni push/PR usando Python 3.11, così scopri subito eventuali regressioni.
+
 Buon invio! Se aggiungi nuove campagne ricordati di versionare solo i template/config, evitando di committare i log o i token OAuth.***
