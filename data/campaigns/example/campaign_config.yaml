@@ -1,0 +1,28 @@
+campaign_name: "example"
+account_name: "default"
+from_email: "tuoaccount@gmail.com"
+send_as_email: ""
+
+subject: "Ciao {{ first_name }}, ecco le novità!"
+daily_send_limit: 50
+delay_between_emails_seconds: 10
+batch_size: 25
+pause_between_batches_seconds: 120
+
+# Aperture via Apps Script (Google Sheets Web App)
+track_opens: true
+# Quando deployi la Web App, imposta qui l'URL e lascia mode=pixel:
+# Esempio: https://script.google.com/macros/s/XXXX/exec?mode=pixel
+tracking_base_url: "https://SCRIPT_WEB_APP_URL/exec?mode=pixel"
+
+# Unsubscribe disabilitato di default
+unsubscribe_enabled: false
+# Se un giorno vuoi abilitarlo, imposta a true e metti l'URL:
+unsubscribe_base_url: "https://SCRIPT_WEB_APP_URL/exec?mode=unsubscribe"
+
+label_for_sent: "campaign/example"
+bounce_label: "campaign/example/bounce"
+
+# Lettura open da Sheets
+sheet_id: "INSERISCI_GOOGLE_SHEET_ID"
+sheet_opens_name: "opens"

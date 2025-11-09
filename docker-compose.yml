@@ -1,0 +1,25 @@
+services:
+  emailer:
+    build: .
+    container_name: emailer
+    volumes:
+      - ./data:/data
+      - ./creds:/creds
+    environment:
+      - TIMEZONE=Europe/Rome
+      - PYTHONPATH=/app
+    tty: true
+
+  test:
+    build: .
+    container_name: emailer_test
+    entrypoint: [""]        # disattiva ENTRYPOINT del Dockerfile
+    command: ["pytest", "-v", "/tests"]
+    working_dir: /app
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      - ./app:/app
+      - ./tests:/tests
+      - ./data:/data
+      - ./creds:/creds

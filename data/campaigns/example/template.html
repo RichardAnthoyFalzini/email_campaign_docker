@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+  <body style="font-family:Arial, sans-serif; line-height:1.5; color:#111;">
+    <p>Ciao {{ first_name }},</p>
+    <p>Questa è un'email di esempio della nostra campagna.</p>
+    <p>Se hai domande, rispondi pure a questa email.</p>
+
+    <p style="font-size:12px;color:#666;">
+      Sei iscritto come {{ email }}
+      {% if unsubscribe_url %}
+        — <a href="{{ unsubscribe_url }}">Disiscriviti</a>
+      {% endif %}
+    </p>
+
+    {% if tracking_pixel_url %}
+      <img src="{{ tracking_pixel_url }}" width="1" height="1" style="display:none;" alt=""/>
+    {% endif %}
+  </body>
+</html>
