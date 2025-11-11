@@ -210,7 +210,12 @@ Il servizio `test` monta `app/`, `tests/`, `data/`, `creds/` e lancia `pytest` p
    ```bash
    docker compose run --rm emailer send --campaign hello_world
    ```
-   - Il comando rispetta `daily_send_limit`, `delay_between_emails_seconds`, `batch_size` e `pause_between_batches_seconds`.
+   - Prima di spedire davvero puoi fare un giro di prova con:  
+     ```bash
+     docker compose run --rm emailer send-test --campaign hello_world --to tuoindirizzo@test.com
+     ```  
+     Il comando prende la prima riga del CSV, popola il template con quei dati e spedisce tutto al destinatario di test (senza toccare i log/stati della campagna).
+   - L’invio reale rispetta `daily_send_limit`, `delay_between_emails_seconds`, `batch_size` e `pause_between_batches_seconds`.
    - Ogni invio aggiorna:
      - `data/logs/<campaign>/sent_log.csv`
      - `data/logs/<campaign>/sent_threads.csv`

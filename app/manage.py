@@ -118,6 +118,18 @@ def _normalize_attachment_path(path: str | None) -> str | None:
     return os.path.join(DATA_ROOT, rel)
 
 
+def _load_first_recipient_row(csv_path: str) -> Dict[str, Any]:
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"recipients.csv non trovato: {csv_path}")
+    with open(csv_path, newline="", encoding="utf-8") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            email = row.get("email", "").strip()
+            if email:
+                return row
+    raise ValueError("recipients.csv non contiene righe valide con campo email")
+
+
 def cmd_auth(args):
     """Consente di eseguire solo il flow OAuth senza inviare email."""
     account = _resolve_account(getattr(args, "account", None), getattr(args, "campaign", None))
@@ -429,6 +441,93 @@ def cmd_send(args):
         skipped=skipped_by_attempts,
     )
 
+
+def cmd_send_test(args):
+    campaign = args.campaign
+    test_email = args.to.strip()
+    if not test_email:
+        raise ValueError("Specificare --to con un indirizzo di test valido")
+
+    cfg = load_config(campaign)
+    creds_dir = os.path.join(CREDS_ROOT, cfg.get("account_name", "default"))
+    service = get_service(creds_dir)
+
+    from_email = cfg.get("send_as_email") or cfg["from_email"]
+    subject_tpl = cfg.get("subject", "Campagna")
+    recipients_csv = os.path.join(CAMPAIGNS_DIR, campaign, "recipients.csv")
+    template_html = os.path.join(CAMPAIGNS_DIR, campaign, "template.html")
+
+    default_attachment_path = _normalize_attachment_path(cfg.get("default_attachment_path"))
+    track_opens = bool(cfg.get("track_opens", False))
+    tracking_base = (cfg.get("tracking_base_url") or "").rstrip("/")
+    unsubscribe_base = (cfg.get("unsubscribe_base_url") or "").rstrip("/")
+    unsubscribe_enabled = bool(cfg.get("unsubscribe_enabled", False))
+
+    max_retry_attempts = int(cfg.get("max_retry_attempts", 3))
+    retry_backoff_initial = float(cfg.get("retry_backoff_initial_seconds", 5))
+    retry_backoff_multiplier = float(cfg.get("retry_backoff_multiplier", 2))
+    retry_backoff_max = float(cfg.get("retry_backoff_max_seconds", 60))
+
+    row = _load_first_recipient_row(recipients_csv)
+    original_email = row.get("email", "").strip() or test_email
+
+    tracking_pixel_url = ""
+    if track_opens and tracking_base:
+        tracking_pixel_url = f"{tracking_base}&cid={campaign}&to={original_email}"
+
+    unsubscribe_url = ""
+    if unsubscribe_enabled and unsubscribe_base:
+        unsubscribe_url = f"{unsubscribe_base}&email={original_email}"
+
+    ctx = {
+        **row,
+        "tracking_pixel_url": tracking_pixel_url,
+        "unsubscribe_url": unsubscribe_url,
+        "email": original_email,
+    }
+    html_body = render_template(template_html, ctx)
+    subject = Template(subject_tpl).render(**row)
+
+    attachment_path = _normalize_attachment_path(row.get("attachment_path", "")) or default_attachment_path
+
+    msg = make_message(from_email, test_email, subject, html_body, attachment_path)
+
+    log_event(
+        "info",
+        "send_test_attempt",
+        campaign=campaign,
+        test_email=test_email,
+        original_recipient=original_email,
+    )
+
+    try:
+        sent = _send_with_backoff(
+            service,
+            msg,
+            max_retry_attempts,
+            retry_backoff_initial,
+            retry_backoff_multiplier,
+            retry_backoff_max,
+        )
+    except Exception as exc:
+        log_event(
+            "error",
+            "send_test_failed",
+            campaign=campaign,
+            test_email=test_email,
+            error=str(exc),
+        )
+        raise
+
+    log_event(
+        "info",
+        "send_test_success",
+        campaign=campaign,
+        test_email=test_email,
+        message_id=sent.get("id"),
+        thread_id=sent.get("threadId"),
+    )
+
 def cmd_list(args):
     root = CAMPAIGNS_DIR
     if not os.path.isdir(root):
@@ -618,6 +717,11 @@ def main():
     s1 = sub.add_parser("send", help="Invia una campagna")
     s1.add_argument("--campaign", required=True)
     s1.set_defaults(func=cmd_send)
+
+    s1b = sub.add_parser("send-test", help="Invia un test usando la prima riga del CSV")
+    s1b.add_argument("--campaign", required=True)
+    s1b.add_argument("--to", required=True, help="Indirizzo email destinatario del test")
+    s1b.set_defaults(func=cmd_send_test)
 
     s2 = sub.add_parser("list", help="Elenca campagne")
     s2.set_defaults(func=cmd_list)

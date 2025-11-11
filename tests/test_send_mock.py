@@ -257,3 +257,54 @@ def test_cmd_send_uses_default_attachment_when_missing(tmp_path, monkeypatch, tm
 
     assert len(captured_paths) >= 1
     assert all(path and path.endswith("data/attachments/default.pdf") for path in captured_paths)
+
+
+def test_cmd_send_test_uses_first_row_but_custom_recipient(tmp_path, monkeypatch, tmp_campaign_dir):
+    class CaptureService(DummyService):
+        def __init__(self):
+            super().__init__()
+            self.sent_to = None
+
+        def send(self, userId, body):
+            self.sent.append(body)
+
+            def _execute():
+                self.sent_to = userId
+                return {"id": "ok", "threadId": "t-test"}
+
+            return types.SimpleNamespace(execute=_execute)
+
+    dummy = CaptureService()
+    monkeypatch.setattr(manage, "get_service", lambda *_: dummy)
+    monkeypatch.setattr(manage, "ensure_label", lambda *a, **kw: "lbl")
+    monkeypatch.setattr(manage, "add_labels", lambda *a, **kw: None)
+
+    data_root = tmp_path / "data"
+    (data_root / "campaigns").mkdir(parents=True)
+    os.environ["DATA_ROOT"] = str(data_root)
+    os.environ["CREDS_ROOT"] = str(tmp_path / "creds")
+    os.makedirs(os.environ["CREDS_ROOT"], exist_ok=True)
+    manage.DATA_ROOT = os.environ["DATA_ROOT"]
+    manage.CREDS_ROOT = os.environ["CREDS_ROOT"]
+    manage.CAMPAIGNS_DIR = os.path.join(manage.DATA_ROOT, "campaigns")
+
+    shutil.copytree(tmp_campaign_dir, data_root / "campaigns" / "example")
+
+    args = types.SimpleNamespace(campaign="example", to="test@example.com")
+
+    captured_kwargs = {}
+
+    real_make = manage.make_message
+
+    def spy_make_message(sender, to, subject, html_body, attachment_path):
+        captured_kwargs["to"] = to
+        captured_kwargs["attachment_path"] = attachment_path
+        captured_kwargs["html_body"] = html_body
+        return real_make(sender, to, subject, html_body, attachment_path)
+
+    monkeypatch.setattr(manage, "make_message", spy_make_message)
+
+    manage.cmd_send_test(args)
+
+    assert captured_kwargs["to"] == "test@example.com"
+    assert "alice" in captured_kwargs["html_body"].lower() or "bob" in captured_kwargs["html_body"].lower()
