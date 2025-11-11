@@ -25,11 +25,28 @@ def get_service(creds_dir: str) -> Any:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
-            # Console flow (compatibile con container/headless)
-            creds = flow.run_console()
+            creds = _run_headless_flow(flow)
         with open(token_path, "w", encoding="utf-8") as f:
             f.write(creds.to_json())
     return build("gmail", "v1", credentials=creds)
+
+
+def _run_headless_flow(flow: InstalledAppFlow):
+    """Replica run_console (deprecato) mostrando URL e leggendo il codice a terminale."""
+    # Portiamo esplicitamente il flow in modalità OOB (out-of-band)
+    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+    print("== Google OAuth ==")
+    print("1) Apri questo URL in un browser e accedi con l'account scelto:")
+    print(auth_url)
+    print("2) Dopo l'autorizzazione, copia il codice mostrato e incollalo qui sotto.")
+    code = input("Codice di verifica: ").strip()
+    flow.fetch_token(code=code)
+    return flow.credentials
 
 def ensure_label(service, label_name: str) -> Optional[str]:
     if not label_name:

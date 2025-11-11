@@ -8,6 +8,7 @@ daily_send_limit: 50
 delay_between_emails_seconds: 10
 batch_size: 25
 pause_between_batches_seconds: 120
+default_attachment_path: ""      # percorso relativo (es. data/attachments/brochure.pdf) usato se il CSV non ne indica uno
 max_attempts_per_contact: 5          # se un contatto fallisce 5 volte resta in stato error
 max_retry_attempts: 3                 # retry immediati per errori 429/5xx
 retry_backoff_initial_seconds: 5

@@ -69,6 +69,41 @@ docker-compose.yml  # servizi emailer + test
 6. Apri l’URL nel browser, autentica l’account Gmail e copia il codice di verifica nella CLI.
 7. Alla fine comparirà `token.json` nella stessa cartella delle credenziali: è il refresh token usato per gli invii futuri. Non committarlo e proteggilo come fosse una password.
 
+#### Procedura dettagliata (UI Google Cloud)
+
+1. **Crea o seleziona un progetto dedicato**  
+   - Premi sul selettore in alto (“Select a project”) e crea un progetto es. `email-campaign`.
+2. **Configura la schermata di consenso OAuth** (richiesto al primo OAuth)  
+   - `API & Services → OAuth consent screen`.  
+   - Tipo utente “External”, compila nome app, email di supporto, contatto sviluppatore e salva.  
+   - Aggiungi l’indirizzo Gmail che userà l’app nella sezione “Test users”.
+3. **Abilita la Gmail API**  
+   - `API & Services → Enabled APIs and services → Enable APIs and Services`.  
+   - Cerca “Gmail API”, aprila e clicca **Enable**.
+4. **Crea l’OAuth Client ID**  
+   - `API & Services → Credentials → Create credentials → OAuth client ID`.  
+   - Tipo applicazione: **Desktop app**; assegna un nome parlante.  
+   - A creazione avvenuta, clicca “Download JSON”.
+5. **Posiziona il file nel repository**  
+   - Crea (se manca) `creds/default/`.  
+   - Copia il file scaricato rinominandolo `credentials.json` dentro `creds/default/`.
+6. **Genera il token autorizzando l’app**  
+   - Esegui:  
+     ```bash
+     docker compose run --rm emailer send --campaign example
+     ```  
+   - La CLI stamperà un URL unico e attenderà un codice.
+7. **Completa il flow OAuth**  
+   - Apri l’URL, effettua login con lo stesso account Gmail, accetta gli scope richiesti.  
+   - Copia il codice fornito da Google e incollalo nel terminale.  
+   - Il comando salverà `token.json` accanto a `credentials.json`. Proteggilo e non versionarlo.
+
+> 💡 **Test senza inviare email**: se vuoi solo verificare che il login funzioni (senza spedire la campagna) esegui  
+> ```bash
+> docker compose run --rm emailer auth --account default
+> ```  
+> oppure passa `--campaign example` per usare l’`account_name` definito nel relativo YAML.
+
 ---
 
 ## 3bis. Gestione segreta (opzionale ma consigliata)
@@ -94,14 +129,43 @@ Su altre piattaforme il meccanismo è analogo: estrai i segreti al volo prima de
 
 ## 4. (Opzionale) Tracking aperture e unsubscribe
 
-1. Crea un Google Sheet con i fogli:
-   - `opens` con intestazione `ts,cid,to,ua,ip`
-   - `unsubs` con `ts,email`
-2. Apri Apps Script, incolla `apps_script_pixel.gs`, sostituisci `SHEET_ID` e deploya come Web App (accesso “Anyone”).
-3. Nel file `campaign_config.yaml` imposta:
-   - `tracking_base_url`: URL della Web App con `?mode=pixel`
-   - `sheet_id`: ID del foglio
-   - `unsubscribe_enabled` + `unsubscribe_base_url` se vuoi il link di disiscrizione (`?mode=unsubscribe`).
+### 4.1 Prepara il Google Sheet
+
+1. Crea un nuovo foglio Google (es. `Email Campaign Tracking`).
+2. Aggiungi due tab:
+   - `opens` con intestazione `ts,cid,to,ua,ip`.
+   - `unsubs` con intestazione `ts,email`.
+3. Copia l’ID del foglio dall’URL (`https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`).
+
+### 4.2 Deploy dell’Apps Script
+
+1. Apri il foglio, vai su **Extensions → Apps Script**.
+2. Cancella il contenuto di `Code.gs` e incolla il file `apps_script_pixel.gs` presente nella repo.
+3. Cerca `const SHEET_ID = "INSERISCI_SHEET_ID";` e sostituisci con l’ID al punto 3 sopra.
+4. Salva lo script (icona disk).
+5. Clicca **Deploy → New Deployment**:
+   - Type: **Web app**.
+   - Description: “Tracking pixel”.
+   - Execute as: **Me**.
+   - Who has access: **Anyone** (anche non autenticati).
+6. Conferma e autorizza lo script quando richiesto.
+7. Copia l’URL generato (es. `https://script.google.com/macros/s/XXXX/exec`).
+
+### 4.3 Collega la campagna
+
+Nel `campaign_config.yaml` della campagna imposta:
+
+```yaml
+tracking_base_url: "https://script.google.com/macros/s/XXXX/exec?mode=pixel"
+sheet_id: "<SHEET_ID>"
+unsubscribe_enabled: true
+unsubscribe_base_url: "https://script.google.com/macros/s/XXXX/exec?mode=unsubscribe"
+```
+
+- Il parametro `cid` viene compilato automaticamente con il nome campagna (`campaign_config.yaml:c\ampaign_name`), mentre `to` contiene l’indirizzo del destinatario.
+- L’endpoint `mode=unsubscribe` registra la richiesta nel tab `unsubs`; puoi reindirizzare l’utente verso una landing personalizzata modificando lo script.
+
+Per un test rapido apri l’URL `...&mode=pixel&cid=test&to=foo@example.com`: dovresti vedere una riga in `opens`. Se abiliti l’unsubscribe, prova `...&mode=unsubscribe&email=foo@example.com` e verifica che compaia in `unsubs`.
 
 ---
 
@@ -116,10 +180,11 @@ Su altre piattaforme il meccanismo è analogo: estrai i segreti al volo prima de
    - limiti (`daily_send_limit`, `delay_between_emails_seconds`, ecc.)
    - resilienza (`max_attempts_per_contact`, `max_retry_attempts`, `retry_backoff_initial_seconds`, `retry_backoff_multiplier`, `retry_backoff_max_seconds`)
    - throttling globale (`global_error_threshold_for_cooldown`, `global_error_cooldown_seconds`)
+   - allegati di default (`default_attachment_path`) se vuoi spedire lo stesso file a tutti
    - parametri tracking/unsubscribe se usati
 3. Modifica `recipients.csv` (una riga per destinatario, puoi aggiungere colonne personalizzate usate dal template).
 4. Personalizza `template.html` con Jinja2 (puoi usare `{{ first_name }}`, `{{ email }}`, ecc.).
-5. Eventuali allegati per-riga vanno salvati sotto `data/attachments/...` e referenziati tramite il campo `attachment_path`.
+5. Eventuali allegati per-riga vanno salvati sotto `data/attachments/...` e referenziati tramite il campo `attachment_path`. Se non compili quella colonna, verrà usato `default_attachment_path` se impostato nel config.
 
 ---
 

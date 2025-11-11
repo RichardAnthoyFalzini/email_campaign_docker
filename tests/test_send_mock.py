@@ -203,3 +203,57 @@ def test_cmd_send_stops_after_max_attempts(tmp_path, monkeypatch, tmp_campaign_d
     lines = [l.strip() for l in open(logs_dir / "sent_log.csv") if l.strip()]
     assert "bob@example.com" in lines
     assert "alice@example.com" not in lines
+
+
+def test_cmd_send_uses_default_attachment_when_missing(tmp_path, monkeypatch, tmp_campaign_dir):
+    dummy = DummyService()
+    monkeypatch.setattr(manage, "get_service", lambda *_: dummy)
+    monkeypatch.setattr(manage, "ensure_label", lambda *a, **kw: "lbl")
+    monkeypatch.setattr(manage, "add_labels", lambda *a, **kw: None)
+
+    data_root = tmp_path / "data"
+    (data_root / "campaigns").mkdir(parents=True)
+    os.environ["DATA_ROOT"] = str(data_root)
+    os.environ["CREDS_ROOT"] = str(tmp_path / "creds")
+    os.makedirs(os.environ["CREDS_ROOT"], exist_ok=True)
+    manage.DATA_ROOT = os.environ["DATA_ROOT"]
+    manage.CREDS_ROOT = os.environ["CREDS_ROOT"]
+    manage.CAMPAIGNS_DIR = os.path.join(manage.DATA_ROOT, "campaigns")
+
+    shutil.copytree(tmp_campaign_dir, data_root / "campaigns" / "example")
+
+    attachments_dir = data_root / "attachments"
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+    default_file = attachments_dir / "default.pdf"
+    default_file.write_text("dummy", encoding="utf-8")
+
+    cfg_path = data_root / "campaigns" / "example" / "campaign_config.yaml"
+    cfg = yaml.safe_load(open(cfg_path))
+    cfg["default_attachment_path"] = "data/attachments/default.pdf"
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f)
+
+    recipients_path = data_root / "campaigns" / "example" / "recipients.csv"
+    rows = list(csv.DictReader(open(recipients_path, encoding="utf-8")))
+    fieldnames = rows[0].keys()
+    for row in rows:
+        row["attachment_path"] = ""
+    with open(recipients_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    captured_paths = []
+    real_make = manage.make_message
+
+    def spy_make_message(sender, to, subject, html_body, attachment_path):
+        captured_paths.append(attachment_path)
+        return real_make(sender, to, subject, html_body, attachment_path)
+
+    monkeypatch.setattr(manage, "make_message", spy_make_message)
+
+    args = types.SimpleNamespace(campaign="example")
+    manage.cmd_send(args)
+
+    assert len(captured_paths) >= 1
+    assert all(path and path.endswith("data/attachments/default.pdf") for path in captured_paths)

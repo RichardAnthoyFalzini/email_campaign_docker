@@ -96,6 +96,42 @@ def render_template(tpl_path: str, ctx: Dict[str, Any]) -> str:
         tpl = Template(f.read())
     return tpl.render(**ctx)
 
+
+def _resolve_account(account: str | None, campaign: str | None) -> str:
+    if campaign:
+        cfg = load_config(campaign)
+        return cfg.get("account_name", account or "default") or "default"
+    return account or "default"
+
+
+def _normalize_attachment_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    path = path.strip()
+    if not path:
+        return None
+    if os.path.isabs(path):
+        return path
+    rel = path.lstrip("/")
+    if rel.startswith("data/"):
+        rel = rel[len("data/"):]
+    return os.path.join(DATA_ROOT, rel)
+
+
+def cmd_auth(args):
+    """Consente di eseguire solo il flow OAuth senza inviare email."""
+    account = _resolve_account(getattr(args, "account", None), getattr(args, "campaign", None))
+    creds_dir = os.path.join(CREDS_ROOT, account)
+    service = get_service(creds_dir)
+    email = ""
+    try:
+        profile = service.users().getProfile(userId="me").execute()
+        email = profile.get("emailAddress", "")
+    except Exception as exc:
+        log_event("warning", "auth_profile_failed", account=account, error=str(exc))
+    log_event("info", "auth_success", account=account, email=email)
+
+
 def make_message(sender: str, to: str, subject: str, html_body: str, attachment_path: str | None):
     from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
@@ -152,6 +188,8 @@ def cmd_send(args):
 
     recipients_csv = os.path.join(CAMPAIGNS_DIR, campaign, "recipients.csv")
     template_html = os.path.join(CAMPAIGNS_DIR, campaign, "template.html")
+
+    default_attachment_path = _normalize_attachment_path(cfg.get("default_attachment_path"))
 
     track_opens = bool(cfg.get("track_opens", False))
     tracking_base = (cfg.get("tracking_base_url") or "").rstrip("/")
@@ -260,9 +298,8 @@ def cmd_send(args):
             html_body = render_template(template_html, ctx)
             subject = Template(subject_tpl).render(**row)
 
-            attachment_path = row.get("attachment_path", "").strip() or None
-            if attachment_path and not os.path.isabs(attachment_path):
-                attachment_path = os.path.join(DATA_ROOT, attachment_path)
+            attachment_path = row.get("attachment_path", "").strip()
+            attachment_path = _normalize_attachment_path(attachment_path) or default_attachment_path
 
             msg = make_message(from_email, email, subject, html_body, attachment_path)
 
@@ -572,6 +609,11 @@ def cmd_stats(args):
 def main():
     p = argparse.ArgumentParser(description="Email Campaign Manager (Docker)")
     sub = p.add_subparsers()
+
+    s0 = sub.add_parser("auth", help="Esegue solo il flow OAuth per un account/campagna")
+    s0.add_argument("--account", help="Sottocartella in creds/ (default=default)")
+    s0.add_argument("--campaign", help="Usa account_name dalla campagna indicata")
+    s0.set_defaults(func=cmd_auth)
 
     s1 = sub.add_parser("send", help="Invia una campagna")
     s1.add_argument("--campaign", required=True)
