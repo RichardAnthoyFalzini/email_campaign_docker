@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, os, csv, time, uuid, json
+import argparse, os, csv, time, uuid, json, random
 from datetime import datetime
 from typing import Dict, Any
 from jinja2 import Template
@@ -8,12 +8,81 @@ import pandas as pd
 
 from gmail_utils import get_service, ensure_label, add_labels, search_messages, get_thread
 from sheets_utils import get_sheets_service
+from googleapiclient.errors import HttpError
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_ROOT = os.environ.get("DATA_ROOT", "/data")
 CREDS_ROOT = os.environ.get("CREDS_ROOT", "/creds")
 CAMPAIGNS_DIR = os.path.join(DATA_ROOT, "campaigns")
 STATE_FILENAME = "state.json"
+DEFAULT_JITTER_RATIO = 0.3
+
+
+def _utc_now() -> str:
+    return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+
+
+def log_event(level: str, event: str, **fields: Any) -> None:
+    """Stampa log strutturati JSON (stdout) per facile ingest."""
+    payload = {
+        "ts": _utc_now(),
+        "level": level.upper(),
+        "event": event,
+    }
+    if fields:
+        payload["data"] = fields
+    print(json.dumps(payload, ensure_ascii=False))
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    """Best-effort extraction of an HTTP status code from googleapiclient errors."""
+    if isinstance(exc, HttpError):
+        if getattr(exc, "status_code", None):
+            return exc.status_code
+        resp = getattr(exc, "resp", None)
+        if resp and getattr(resp, "status", None):
+            return resp.status
+    return getattr(exc, "status", None)
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    status = _extract_status_code(exc)
+    if status is not None:
+        return status == 429 or 500 <= status < 600
+    return isinstance(exc, (TimeoutError, ConnectionError))
+
+
+def _sleep_with_jitter(base_seconds: float) -> None:
+    jitter = base_seconds * DEFAULT_JITTER_RATIO
+    time.sleep(base_seconds + random.uniform(0, jitter))
+
+
+def _send_with_backoff(service, msg_body: Dict[str, Any], max_attempts: int, initial_delay: float,
+                       multiplier: float, max_delay: float):
+    """Invia il messaggio Gmail con retry exponential backoff."""
+    attempt = 1
+    current_delay = max(initial_delay, 1.0)
+    max_delay = max(max_delay, current_delay)
+
+    while attempt <= max_attempts:
+        try:
+            request = service.users().messages().send(userId="me", body=msg_body)
+            return request.execute()
+        except Exception as exc:
+            if not _is_retryable_exception(exc) or attempt == max_attempts:
+                raise
+            sleep_for = min(current_delay, max_delay)
+            log_event(
+                "warning",
+                "send_retry_scheduled",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                error=str(exc),
+                sleep_seconds=round(sleep_for, 2),
+            )
+            _sleep_with_jitter(sleep_for)
+            current_delay = min(current_delay * max(multiplier, 1.0), max_delay)
+            attempt += 1
 
 def load_config(campaign: str) -> Dict[str, Any]:
     cfg_path = os.path.join(CAMPAIGNS_DIR, campaign, "campaign_config.yaml")
@@ -50,7 +119,7 @@ def make_message(sender: str, to: str, subject: str, html_body: str, attachment_
             part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
             msg.attach(part)
         else:
-            print(f"[AVVISO] Allegato non trovato: {attachment_path}")
+            log_event("warning", "attachment_missing", attachment_path=attachment_path)
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
     return {"raw": raw}
 
@@ -94,12 +163,35 @@ def cmd_send(args):
     batch_size = int(cfg.get("batch_size", daily_limit))
     pause_between = int(cfg.get("pause_between_batches_seconds", 0))
 
+    max_retry_attempts = int(cfg.get("max_retry_attempts", 3))
+    retry_backoff_initial = float(cfg.get("retry_backoff_initial_seconds", 5))
+    retry_backoff_multiplier = float(cfg.get("retry_backoff_multiplier", 2))
+    retry_backoff_max = float(cfg.get("retry_backoff_max_seconds", 60))
+    max_attempts_per_contact = int(cfg.get("max_attempts_per_contact", 5))
+    global_error_threshold = int(cfg.get("global_error_threshold_for_cooldown", 5))
+    global_error_cooldown = int(cfg.get("global_error_cooldown_seconds", 120))
+
     logs_dir = os.path.join(DATA_ROOT, "logs", campaign)
     os.makedirs(logs_dir, exist_ok=True)
     sent_log_path = os.path.join(logs_dir, "sent_log.csv")
     sent_threads_path = os.path.join(logs_dir, "sent_threads.csv")
     state_path = os.path.join(logs_dir, STATE_FILENAME)
     send_state = load_send_state(state_path)
+
+    total_recipients = 0
+    if os.path.exists(recipients_csv):
+        with open(recipients_csv, newline="", encoding="utf-8") as csvfile:
+            total_recipients = sum(1 for _ in csv.DictReader(csvfile))
+
+    log_event(
+        "info",
+        "campaign_send_start",
+        campaign=campaign,
+        total_recipients=total_recipients,
+        daily_limit=daily_limit,
+        delay_seconds=delay,
+        batch_size=batch_size,
+    )
 
     sent_set = set()
     if os.path.exists(sent_log_path):
@@ -109,6 +201,10 @@ def cmd_send(args):
 
     sent_today = 0
     batch_counter = 0
+    consecutive_errors = 0
+    skipped_by_attempts = 0
+    success_count = 0
+    error_count = 0
 
     sent_threads = []
     if os.path.exists(sent_threads_path):
@@ -135,6 +231,19 @@ def cmd_send(args):
                     state_entry["status"] = "pending"
 
             if email in sent_set:
+                continue
+
+            entry = send_state[email]
+            attempts_done = entry.get("attempts", 0)
+            if entry.get("status") == "error" and attempts_done >= max_attempts_per_contact:
+                log_event(
+                    "warning",
+                    "max_attempts_reached",
+                    email=email,
+                    attempts=attempts_done,
+                    max_attempts=max_attempts_per_contact,
+                )
+                skipped_by_attempts += 1
                 continue
 
             tracking_id = str(uuid.uuid4())
@@ -165,15 +274,51 @@ def cmd_send(args):
             entry.pop("error", None)
             save_send_state(state_path, send_state)
 
+            log_event(
+                "info",
+                "send_attempt",
+                email=email,
+                campaign=campaign,
+                attempt=entry["attempts"],
+            )
+
             try:
-                sent = service.users().messages().send(userId="me", body=msg).execute()
+                sent = _send_with_backoff(
+                    service,
+                    msg,
+                    max_retry_attempts,
+                    retry_backoff_initial,
+                    retry_backoff_multiplier,
+                    retry_backoff_max,
+                )
             except Exception as exc:
                 entry["status"] = "error"
                 entry["error"] = str(exc)
                 entry["last_error_ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
                 save_send_state(state_path, send_state)
-                print(f"[ERRORE] Invio verso {email}: {exc}")
+                log_event(
+                    "error",
+                    "send_failed",
+                    email=email,
+                    campaign=campaign,
+                    error=str(exc),
+                    attempts=entry["attempts"],
+                )
+                error_count += 1
+                consecutive_errors += 1
+                if global_error_threshold > 0 and consecutive_errors >= global_error_threshold:
+                    if global_error_cooldown > 0:
+                        log_event(
+                            "warning",
+                            "global_cooldown",
+                            consecutive_errors=consecutive_errors,
+                            cooldown_seconds=global_error_cooldown,
+                        )
+                    time.sleep(global_error_cooldown)
+                consecutive_errors = 0
                 continue
+            consecutive_errors = 0
+            success_count += 1
 
             msg_id = sent.get("id")
             thread_id = sent.get("threadId")
@@ -182,7 +327,13 @@ def cmd_send(args):
                 try:
                     add_labels(service, msg_id, [label_id])
                 except Exception as e:
-                    print(f"[AVVISO] label: {e}")
+                    log_event(
+                        "warning",
+                        "label_apply_failed",
+                        email=email,
+                        label=label_name,
+                        error=str(e),
+                    )
 
             logf.write(email + "\n")
             logf.flush()
@@ -200,19 +351,46 @@ def cmd_send(args):
             entry["last_success_ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
             save_send_state(state_path, send_state)
 
-            print(f"Inviato a {email} (message id: {msg_id}, thread: {thread_id})")
+            log_event(
+                "info",
+                "send_success",
+                email=email,
+                campaign=campaign,
+                message_id=msg_id,
+                thread_id=thread_id,
+                attempt=entry["attempts"],
+            )
 
             sent_today += 1
             batch_counter += 1
             if sent_today >= daily_limit:
-                print(f"Raggiunto daily_send_limit={daily_limit}. Stop.")
+                log_event(
+                    "info",
+                    "daily_limit_reached",
+                    campaign=campaign,
+                    daily_limit=daily_limit,
+                )
                 break
             time.sleep(delay)
             if batch_counter >= batch_size:
                 batch_counter = 0
                 if pause_between > 0:
-                    print(f"Pausa tra batch di {pause_between}s ...")
+                    log_event(
+                        "info",
+                        "batch_pause",
+                        campaign=campaign,
+                        pause_seconds=pause_between,
+                    )
                     time.sleep(pause_between)
+
+    log_event(
+        "info",
+        "campaign_send_complete",
+        campaign=campaign,
+        sent=success_count,
+        errors=error_count,
+        skipped=skipped_by_attempts,
+    )
 
 def cmd_list(args):
     root = CAMPAIGNS_DIR

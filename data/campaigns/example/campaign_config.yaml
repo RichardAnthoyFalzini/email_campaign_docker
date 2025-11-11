@@ -8,6 +8,13 @@ daily_send_limit: 50
 delay_between_emails_seconds: 10
 batch_size: 25
 pause_between_batches_seconds: 120
+max_attempts_per_contact: 5          # se un contatto fallisce 5 volte resta in stato error
+max_retry_attempts: 3                 # retry immediati per errori 429/5xx
+retry_backoff_initial_seconds: 5
+retry_backoff_multiplier: 2
+retry_backoff_max_seconds: 60
+global_error_threshold_for_cooldown: 5  # dopo 5 errori consecutivi
+global_error_cooldown_seconds: 120      # pausa (in secondi) prima di riprendere
 
 # Aperture via Apps Script (Google Sheets Web App)
 track_opens: true

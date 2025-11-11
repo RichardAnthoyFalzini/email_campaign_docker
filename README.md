@@ -4,6 +4,25 @@ Toolbox per spedire newsletter o campagne one-shot tramite Gmail API dentro un c
 
 ---
 
+## Guida rapida (3 step)
+
+1. **Configura gli accessi Gmail**
+   - Crea un OAuth Client “Desktop” nel progetto Google Cloud con Gmail API abilitata.
+   - Scarica `credentials.json` e salvalo in `creds/default/` (o in `creds/<nome_account>/` se vuoi account multipli).  
+   - Al primo `docker compose run --rm emailer send …` partirà il flow OAuth in console: inserisci il codice e verrà generato automaticamente `token.json` nella stessa cartella.
+
+2. **Prepara la campagna**
+   - Duplica l’esempio `cp -R data/campaigns/example data/campaigns/<nome_campagna>`.
+   - Aggiorna `campaign_config.yaml`: mittente (`from_email`/`send_as_email`), limiti (`daily_send_limit`, `delay_between_emails_seconds`, ecc.), resilienza (retry/backoff/cooldown) e tracking (pixel + unsubscribe).
+   - Compila `recipients.csv` con i destinatari e gli eventuali campi personalizzati, modifica `template.html` e carica gli allegati opzionali sotto `data/attachments/...`.
+
+3. **Avvia build, test e invio**
+   - `docker compose build` per creare l’immagine, `docker compose run --rm test` per eseguire `pytest` dentro il container.
+   - Lancia l’invio con `docker compose run --rm emailer send --campaign <nome_campagna>`.  
+   - Monitora lo STDOUT (log JSON strutturati) o consulta `data/logs/<campagna>/` per stato, log degli invii e metriche aggregate.
+
+---
+
 ## 1. Prerequisiti
 
 1. **Docker + Docker Compose** installati e funzionanti.
@@ -38,6 +57,39 @@ docker-compose.yml  # servizi emailer + test
 3. Al primo avvio, il CLI avvierà il flow OAuth (modalità console) e salverà `token.json` nella stessa cartella.
 4. Se usi account multipli, crea sottocartelle (`creds/acme/`, ecc.) e punta a quella giusta in `campaign_config.yaml` (`account_name`).
 
+### 3.1 Come generare `credentials.json` e `token.json`
+
+1. Vai su [console.cloud.google.com](https://console.cloud.google.com/) e seleziona/crea un progetto dedicato alle campagne email.
+2. Nel menu “API & Services” abilita **Gmail API** (Enable APIs and Services → cerca “Gmail API” → Enable).
+3. Sempre sotto “API & Services”, apri “Credentials” e clicca **Create Credentials → OAuth client ID**:
+   - Tipo applicazione: **Desktop**.
+   - Scarica il file `credentials.json` e salvalo in `creds/default/`.
+4. (Facoltativo ma consigliato) imposta schermata di consenso OAuth con nome applicazione e email di supporto, e aggiungi gli account che useranno lo strumento.
+5. Avvia il container per la prima volta, es. `docker compose run --rm emailer send --campaign example`: lo script stamperà un URL.
+6. Apri l’URL nel browser, autentica l’account Gmail e copia il codice di verifica nella CLI.
+7. Alla fine comparirà `token.json` nella stessa cartella delle credenziali: è il refresh token usato per gli invii futuri. Non committarlo e proteggilo come fosse una password.
+
+---
+
+## 3bis. Gestione segreta (opzionale ma consigliata)
+
+Per evitare di versionare o lasciare in chiaro le credenziali sul filesystem puoi affidarti a un Secret Manager (Google Secret Manager, AWS Secrets Manager, HashiCorp Vault, ecc.). Un flusso tipico con Google Cloud:
+
+1. Carica il file sul Secret Manager:
+   ```bash
+   gcloud secrets create emailer-credentials --data-file=creds/default/credentials.json
+   gcloud secrets create emailer-token --data-file=creds/default/token.json  # dopo il primo login
+   ```
+2. Concedi al service account/utente che avvia i container il permesso `roles/secretmanager.secretAccessor`.
+3. Prima di eseguire `docker compose run ...`, recupera i file e popolali nelle cartelle montate (puoi usare uno script wrapper):
+   ```bash
+   gcloud secrets versions access latest --secret=emailer-credentials > creds/default/credentials.json
+   gcloud secrets versions access latest --secret=emailer-token > creds/default/token.json
+   ```
+4. Dopo l’esecuzione, puoi cancellare i file temporanei (`shred -u creds/default/*.json`) sapendo che la copia autoritativa resta nel Secret Manager.
+
+Su altre piattaforme il meccanismo è analogo: estrai i segreti al volo prima del comando e non committarli mai. Assicurati che la directory `creds/` sia protetta da ACL/permessi restrittivi sull’host.
+
 ---
 
 ## 4. (Opzionale) Tracking aperture e unsubscribe
@@ -62,6 +114,8 @@ docker-compose.yml  # servizi emailer + test
 2. Apri `data/campaigns/hello_world/campaign_config.yaml` e aggiorna:
    - `campaign_name`, `from_email`, `send_as_email` (se usi alias)
    - limiti (`daily_send_limit`, `delay_between_emails_seconds`, ecc.)
+   - resilienza (`max_attempts_per_contact`, `max_retry_attempts`, `retry_backoff_initial_seconds`, `retry_backoff_multiplier`, `retry_backoff_max_seconds`)
+   - throttling globale (`global_error_threshold_for_cooldown`, `global_error_cooldown_seconds`)
    - parametri tracking/unsubscribe se usati
 3. Modifica `recipients.csv` (una riga per destinatario, puoi aggiungere colonne personalizzate usate dal template).
 4. Personalizza `template.html` con Jinja2 (puoi usare `{{ first_name }}`, `{{ email }}`, ecc.).
@@ -96,7 +150,12 @@ Il servizio `test` monta `app/`, `tests/`, `data/`, `creds/` e lancia `pytest` p
      - `data/logs/<campaign>/sent_log.csv`
      - `data/logs/<campaign>/sent_threads.csv`
      - `data/logs/<campaign>/state.json` (stato persistente per riprendere dopo un crash).
-   - Se qualcosa va storto, i contatti rimasti in stato `pending`/`error` verranno ritentati al prossimo `send`.
+   - Gli errori 429/5xx vengono ritentati automaticamente con exponential backoff e jitter; dopo `global_error_threshold_for_cooldown` errori consecutivi il processo attende `global_error_cooldown_seconds` prima di ripartire.
+   - Se qualcosa va storto, i contatti rimasti in stato `pending`/`error` verranno ritentati al prossimo `send`, rispettando `max_attempts_per_contact`.
+   - Lo STDOUT espone log JSON strutturati, utili per shipping verso Stackdriver/Datadog/etc. Esempio:
+     ```json
+     {"ts":"2024-05-01T10:11:12.123Z","level":"INFO","event":"send_success","data":{"campaign":"hello_world","email":"mario@example.com","message_id":"abc123"}}
+     ```
 
 ---
 

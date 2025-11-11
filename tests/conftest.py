@@ -42,3 +42,10 @@ def tmp_campaign_dir(tmp_path, project_root):
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst)
     yield dst
+
+
+@pytest.fixture(autouse=True)
+def fast_sleep(monkeypatch):
+    """Evita di rallentare i test: sostituisce time.sleep nel modulo manage."""
+    import app.manage as manage
+    monkeypatch.setattr(manage.time, "sleep", lambda *_: None)

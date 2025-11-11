@@ -1,0 +1,42 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Tooling outputs
+.coverage
+htmlcov/
+dist/
+build/
+
+# Environment files
+.env
+
+# App-specific runtime data
+data/logs/
+data/campaigns/*
+!data/campaigns/example/
+!data/campaigns/example/**
+data/attachments/**
+!data/attachments/.gitkeep
+
+creds/**
+!creds/.gitkeep
+!creds/**/.gitkeep
+
+# OAuth tokens generated at runtime
+token.json
+token_*.json
+token.sheets.json
