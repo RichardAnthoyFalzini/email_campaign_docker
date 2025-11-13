@@ -20,7 +20,24 @@ def get_sheets_service(creds_dir: str):
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES_SHEETS)
-            creds = flow.run_console()
+            creds = _run_headless_flow(flow)
         with open(token_path, "w", encoding="utf-8") as f:
             f.write(creds.to_json())
     return build("sheets", "v4", credentials=creds)
+
+
+def _run_headless_flow(flow: InstalledAppFlow):
+    """Replica run_console mostrando URL + codice per ambienti headless."""
+    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+    print("== Google OAuth (Sheets) ==")
+    print("1) Apri questo URL in un browser e autorizza l'accesso:")
+    print(auth_url)
+    print("2) Copia il codice mostrato e incollalo qui sotto.")
+    code = input("Codice di verifica: ").strip()
+    flow.fetch_token(code=code)
+    return flow.credentials
