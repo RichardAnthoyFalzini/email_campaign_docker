@@ -9,6 +9,14 @@ services:
       - TIMEZONE=Europe/Rome
       - PYTHONPATH=/app
     tty: true
+    entrypoint: ["python", "-m", "app.manage"]
+
+  emailer-liveaboard25:
+    extends:
+      service: emailer
+    container_name: emailer_liveaboard25
+    command: ["send", "--campaign", "liveaboard25"]
+    restart: "no"
 
   test:
     build: .

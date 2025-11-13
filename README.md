@@ -221,6 +221,13 @@ Il servizio `test` monta `app/`, `tests/`, `data/`, `creds/` e lancia `pytest` p
      ```  
      Il comando prende la prima riga del CSV, popola il template con quei dati e spedisce tutto al destinatario di test (senza toccare i log/stati della campagna).
    - L’invio reale rispetta `daily_send_limit`, `delay_between_emails_seconds`, `batch_size` e `pause_between_batches_seconds`.
+   - Se vuoi lanciare una campagna “fire-and-forget”, usa un target dedicato nel compose (l’esempio incluso è `emailer-liveaboard25`):
+     ```bash
+     docker compose up -d emailer-liveaboard25        # avvio in background
+     docker compose logs -f emailer-liveaboard25      # segui i log
+     docker compose rm -sf emailer-liveaboard25       # stop/cleanup
+     ```
+     Puoi duplicare il servizio con un altro nome cambiando solo il comando `["send", "--campaign", "<nome>"]`.
    - Ogni invio aggiorna:
      - `data/logs/<campaign>/sent_log.csv`
      - `data/logs/<campaign>/sent_threads.csv`
