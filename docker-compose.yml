@@ -9,7 +9,6 @@ services:
       - TIMEZONE=Europe/Rome
       - PYTHONPATH=/app
     tty: true
-    entrypoint: ["python", "-m", "app.manage"]
 
   emailer-liveaboard25:
     extends:
