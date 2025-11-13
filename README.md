@@ -210,7 +210,12 @@ Il servizio `test` monta `app/`, `tests/`, `data/`, `creds/` e lancia `pytest` p
    ```bash
    docker compose run --rm emailer send --campaign hello_world
    ```
-   - Prima di spedire davvero puoi fare un giro di prova con:  
+   - Prima controlla tutto con un preflight:  
+     ```bash
+     docker compose run --rm emailer preflight --campaign hello_world
+     ```  
+     Il comando riepiloga mittente/oggetto, conta i destinatari, valida template/allegati e, se configurato, prova a leggere il Google Sheet del tracking.
+   - Poi, se vuoi, fai un giro di prova con:  
      ```bash
      docker compose run --rm emailer send-test --campaign hello_world --to tuoindirizzo@test.com
      ```  

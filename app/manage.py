@@ -130,6 +130,33 @@ def _load_first_recipient_row(csv_path: str) -> Dict[str, Any]:
     raise ValueError("recipients.csv non contiene righe valide con campo email")
 
 
+def _summarize_recipients(csv_path: str, default_attachment: str | None):
+    stats = {
+        "total": 0,
+        "missing_email": 0,
+        "attachment_missing": [],
+        "attachment_ok": set(),
+    }
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"recipients.csv non trovato: {csv_path}")
+
+    with open(csv_path, newline="", encoding="utf-8") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            email = row.get("email", "").strip()
+            if not email:
+                stats["missing_email"] += 1
+                continue
+            stats["total"] += 1
+            attachment_path = _normalize_attachment_path(row.get("attachment_path", "")) or default_attachment
+            if attachment_path:
+                if os.path.exists(attachment_path):
+                    stats["attachment_ok"].add(attachment_path)
+                else:
+                    stats["attachment_missing"].append(attachment_path)
+    return stats
+
+
 def cmd_auth(args):
     """Consente di eseguire solo il flow OAuth senza inviare email."""
     account = _resolve_account(getattr(args, "account", None), getattr(args, "campaign", None))
@@ -528,6 +555,85 @@ def cmd_send_test(args):
         thread_id=sent.get("threadId"),
     )
 
+
+def cmd_preflight(args):
+    campaign = args.campaign
+    cfg = load_config(campaign)
+
+    creds_dir = os.path.join(CREDS_ROOT, cfg.get("account_name", "default"))
+    recipients_csv = os.path.join(CAMPAIGNS_DIR, campaign, "recipients.csv")
+    template_html = os.path.join(CAMPAIGNS_DIR, campaign, "template.html")
+    default_attachment_path = _normalize_attachment_path(cfg.get("default_attachment_path"))
+
+    template_exists = os.path.exists(template_html)
+    if not template_exists:
+        log_event("error", "preflight_template_missing", campaign=campaign, template_path=template_html)
+
+    default_attachment_ok = None
+    if default_attachment_path:
+        default_attachment_ok = os.path.exists(default_attachment_path)
+        if not default_attachment_ok:
+            log_event(
+                "warning",
+                "preflight_default_attachment_missing",
+                campaign=campaign,
+                attachment_path=default_attachment_path,
+            )
+
+    recipient_stats = {"total": 0, "missing_email": 0, "attachment_missing": [], "attachment_ok": set()}
+    try:
+        recipient_stats = _summarize_recipients(recipients_csv, default_attachment_path)
+    except FileNotFoundError:
+        log_event("error", "preflight_recipients_missing", campaign=campaign, recipients_path=recipients_csv)
+
+    for missing_path in recipient_stats["attachment_missing"]:
+        log_event(
+            "warning",
+            "preflight_attachment_missing",
+            campaign=campaign,
+            attachment_path=missing_path,
+        )
+
+    sheet_status = "skipped"
+    sheet_error = None
+    if cfg.get("track_opens") and cfg.get("sheet_id"):
+        sheet_name = cfg.get("sheet_opens_name", "opens")
+        try:
+            sheets_service = get_sheets_service(creds_dir)
+            request = sheets_service.spreadsheets().values().get(
+                spreadsheetId=cfg["sheet_id"],
+                range=f"{sheet_name}!A1:A1",
+            )
+            request.execute()
+            sheet_status = "ok"
+        except Exception as exc:
+            sheet_status = "error"
+            sheet_error = str(exc)
+            log_event(
+                "error",
+                "preflight_sheet_error",
+                campaign=campaign,
+                sheet_id=cfg["sheet_id"],
+                error=sheet_error,
+            )
+
+    summary = {
+        "campaign": campaign,
+        "from_email": cfg.get("send_as_email") or cfg.get("from_email"),
+        "subject": cfg.get("subject", ""),
+        "total_recipients": recipient_stats["total"],
+        "missing_email_rows": recipient_stats["missing_email"],
+        "attachment_missing": len(recipient_stats["attachment_missing"]),
+        "attachment_ok": len(recipient_stats["attachment_ok"]),
+        "default_attachment_present": default_attachment_ok,
+        "template_exists": template_exists,
+        "sheet_status": sheet_status,
+    }
+    if sheet_error:
+        summary["sheet_error"] = sheet_error
+
+    log_event("info", "preflight_summary", **summary)
+
 def cmd_list(args):
     root = CAMPAIGNS_DIR
     if not os.path.isdir(root):
@@ -722,6 +828,10 @@ def main():
     s1b.add_argument("--campaign", required=True)
     s1b.add_argument("--to", required=True, help="Indirizzo email destinatario del test")
     s1b.set_defaults(func=cmd_send_test)
+
+    s1c = sub.add_parser("preflight", help="Riepiloga configurazione e controlli campagna")
+    s1c.add_argument("--campaign", required=True)
+    s1c.set_defaults(func=cmd_preflight)
 
     s2 = sub.add_parser("list", help="Elenca campagne")
     s2.set_defaults(func=cmd_list)
