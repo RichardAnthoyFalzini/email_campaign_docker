@@ -1,18 +1,20 @@
+x-emailer-base: &emailer-base
+  build: .
+  volumes:
+    - ./data:/data
+    - ./creds:/creds
+  environment:
+    - TIMEZONE=Europe/Rome
+    - PYTHONPATH=/app
+  tty: true
+
 services:
   emailer:
-    build: .
+    <<: *emailer-base
     container_name: emailer
-    volumes:
-      - ./data:/data
-      - ./creds:/creds
-    environment:
-      - TIMEZONE=Europe/Rome
-      - PYTHONPATH=/app
-    tty: true
 
   emailer-liveaboard25:
-    extends:
-      service: emailer
+    <<: *emailer-base
     container_name: emailer_liveaboard25
     command: ["send", "--campaign", "liveaboard25"]
     restart: "no"
